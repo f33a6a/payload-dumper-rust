@@ -209,9 +209,9 @@ jobs:
         run: |
           mkdir -p .cargo
           @"
-[target.${{ env.TARGET }}]
-rustflags = ["-L", "${{ github.workspace }}/lib/windows/${{ matrix.architecture }}/lib"]
-"@ | Out-File -FilePath .cargo/config.toml -Encoding utf8
+           [target.${{ env.TARGET }}]
+           rustflags = ["-L", "${{ github.workspace }}/lib/windows/${{ matrix.architecture }}/lib"]
+          "@ | Out-File -FilePath .cargo/config.toml -Encoding utf8
           cat .cargo/config.toml
         shell: pwsh
 
