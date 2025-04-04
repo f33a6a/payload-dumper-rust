@@ -92,11 +92,8 @@ jobs:
             $env:CC = "clang"
           }
           
-          # Convert Windows path to Unix-style
-          $unixPath = "${{ github.workspace }}".Replace('\','/') + "/lib/windows/${{ matrix.architecture }}"
-          
           # Configure and build
-          bash -c "./configure --prefix=$unixPath --static"
+          bash -c "./configure --prefix=$(${{ github.workspace }}.Replace('\','/') + '/lib/windows/${{ matrix.architecture }}') --static"
           make -j $env:NUMBER_OF_PROCESSORS
           make install
           
@@ -126,11 +123,8 @@ jobs:
             $hostOption = "aarch64-w64-mingw32"
           }
           
-          # Convert Windows path to Unix-style
-          $unixPath = "${{ github.workspace }}".Replace('\','/') + "/lib/windows/${{ matrix.architecture }}"
-          
           # Configure and build
-          bash -c "./configure --host=$hostOption --prefix=$unixPath --disable-shared --enable-static"
+          bash -c "./configure --host=$hostOption --prefix=$(${{ github.workspace }}.Replace('\','/') + '/lib/windows/${{ matrix.architecture }}') --disable-shared --enable-static"
           make -j $env:NUMBER_OF_PROCESSORS
           make install
           
@@ -145,9 +139,6 @@ jobs:
           cd ${{ github.workspace }}\build\libzip  
           curl -L "https://libzip.org/download/libzip-1.11.3.tar.xz" -o libzip.tar.xz  
           tar -xf libzip.tar.xz --strip-components=1  
-
-      - name: Install CMake  
-        uses: lukka/get-cmake@latest  
 
       - name: Build libzip  
         run: |  
@@ -164,7 +155,7 @@ jobs:
             $toolchain = "aarch64-w64-mingw32"
           }
           
-          # Configure with CMake
+          # Disable building tools to avoid linker issues
           cmake .. `
             -G "MinGW Makefiles" `
             -DCMAKE_C_COMPILER="$toolchain-gcc" `
@@ -175,7 +166,11 @@ jobs:
             -DZLIB_LIBRARY="${{ github.workspace }}\lib\windows\${{ matrix.architecture }}\lib\libz.a" `
             -DLIBLZMA_INCLUDE_DIR="${{ github.workspace }}\lib\windows\${{ matrix.architecture }}\include" `
             -DLIBLZMA_LIBRARY="${{ github.workspace }}\lib\windows\${{ matrix.architecture }}\lib\liblzma.a" `
-            -DBUILD_SHARED_LIBS=OFF
+            -DBUILD_SHARED_LIBS=OFF `
+            -DBUILD_TOOLS=OFF `
+            -DBUILD_REGRESS=OFF `
+            -DBUILD_EXAMPLES=OFF `
+            -DBUILD_DOC=OFF
           
           cmake --build . --config Release --parallel $env:NUMBER_OF_PROCESSORS
           cmake --install .
