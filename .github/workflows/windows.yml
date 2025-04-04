@@ -60,7 +60,6 @@ jobs:
           } elseif ("${{ matrix.architecture }}" -eq "i686") {  
             echo "TARGET=i686-pc-windows-gnu" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append  
           } else {  
-            # Correct target for ARM64
             echo "TARGET=aarch64-pc-windows-msvc" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append  
           }  
 
@@ -87,29 +86,21 @@ jobs:
           # Set compiler based on architecture
           if ("${{ matrix.architecture }}" -eq "i686") {
             $env:CC = "i686-w64-mingw32-gcc"
-            $prefix = "C:/msys64/mingw32"
           } elseif ("${{ matrix.architecture }}" -eq "x86_64") {
             $env:CC = "x86_64-w64-mingw32-gcc"
-            $prefix = "C:/msys64/mingw64"
           } else {
-            # For ARM64, use clang
             $env:CC = "clang"
-            $prefix = "C:/msys64/clang64"
           }
           
-          # First run configure with proper path conversion for Windows
-          $configureCommand = "sh ./configure --prefix=$(${{ github.workspace }}.Replace('\','/')/lib/windows/${{ matrix.architecture }} --static"
-          Write-Host "Running: $configureCommand"
-          Invoke-Expression $configureCommand
+          # Convert Windows path to Unix-style
+          $unixPath = "${{ github.workspace }}".Replace('\','/') + "/lib/windows/${{ matrix.architecture }}"
           
-          # Then run make
+          # Configure and build
+          bash -c "./configure --prefix=$unixPath --static"
           make -j $env:NUMBER_OF_PROCESSORS
+          make install
           
-          # Finally run make install with proper path
-          $installCommand = "make install"
-          Write-Host "Running: $installCommand"
-          Invoke-Expression $installCommand
-          
+          # Verify build
           if (!(Test-Path "${{ github.workspace }}\lib\windows\${{ matrix.architecture }}\lib\libz.a")) {
             Write-Error "Failed to build zlib static library"
             Get-ChildItem -Path "${{ github.workspace }}\lib\windows\${{ matrix.architecture }}" -Recurse
@@ -126,22 +117,24 @@ jobs:
         run: |  
           cd ${{ github.workspace }}\build\liblzma  
           
+          # Set host based on architecture
           if ("${{ matrix.architecture }}" -eq "i686") {
-            $hostOption = "--host=i686-w64-mingw32"
-            $prefix = "C:/msys64/mingw32"
+            $hostOption = "i686-w64-mingw32"
           } elseif ("${{ matrix.architecture }}" -eq "x86_64") {
-            $hostOption = "--host=x86_64-w64-mingw32"
-            $prefix = "C:/msys64/mingw64"
+            $hostOption = "x86_64-w64-mingw32"
           } else {
-            $hostOption = "--host=aarch64-w64-mingw32"
-            $prefix = "C:/msys64/clang64"
+            $hostOption = "aarch64-w64-mingw32"
           }
           
-          $env:CFLAGS = "-static"
-          sh ./configure $hostOption --prefix=$(${{ github.workspace }}.Replace('\','/')/lib/windows/${{ matrix.architecture }}) --disable-shared --enable-static
+          # Convert Windows path to Unix-style
+          $unixPath = "${{ github.workspace }}".Replace('\','/') + "/lib/windows/${{ matrix.architecture }}"
+          
+          # Configure and build
+          bash -c "./configure --host=$hostOption --prefix=$unixPath --disable-shared --enable-static"
           make -j $env:NUMBER_OF_PROCESSORS
           make install
           
+          # Verify build
           if (!(Test-Path "${{ github.workspace }}\lib\windows\${{ matrix.architecture }}\lib\liblzma.a")) {
             Write-Error "Failed to build liblzma static library"
             exit 1
@@ -153,43 +146,41 @@ jobs:
           curl -L "https://libzip.org/download/libzip-1.11.3.tar.xz" -o libzip.tar.xz  
           tar -xf libzip.tar.xz --strip-components=1  
 
+      - name: Install CMake  
+        uses: lukka/get-cmake@latest  
+
       - name: Build libzip  
         run: |  
           cd ${{ github.workspace }}\build\libzip  
           mkdir -p build  
           cd build  
           
+          # Set toolchain based on architecture
           if ("${{ matrix.architecture }}" -eq "i686") {
             $toolchain = "i686-w64-mingw32"
-            $prefix = "C:/msys64/mingw32"
           } elseif ("${{ matrix.architecture }}" -eq "x86_64") {
             $toolchain = "x86_64-w64-mingw32"
-            $prefix = "C:/msys64/mingw64"
           } else {
             $toolchain = "aarch64-w64-mingw32"
-            $prefix = "C:/msys64/clang64"
           }
           
+          # Configure with CMake
           cmake .. `
             -G "MinGW Makefiles" `
             -DCMAKE_C_COMPILER="$toolchain-gcc" `
             -DCMAKE_CXX_COMPILER="$toolchain-g++" `
             -DCMAKE_SYSTEM_NAME="Windows" `
             -DCMAKE_INSTALL_PREFIX="${{ github.workspace }}\lib\windows\${{ matrix.architecture }}" `
-            -DCMAKE_PREFIX_PATH="${{ github.workspace }}\lib\windows\${{ matrix.architecture }}" `
             -DZLIB_INCLUDE_DIR="${{ github.workspace }}\lib\windows\${{ matrix.architecture }}\include" `
             -DZLIB_LIBRARY="${{ github.workspace }}\lib\windows\${{ matrix.architecture }}\lib\libz.a" `
             -DLIBLZMA_INCLUDE_DIR="${{ github.workspace }}\lib\windows\${{ matrix.architecture }}\include" `
             -DLIBLZMA_LIBRARY="${{ github.workspace }}\lib\windows\${{ matrix.architecture }}\lib\liblzma.a" `
-            -DBUILD_SHARED_LIBS=OFF `
-            -DBUILD_TOOLS=OFF `
-            -DBUILD_REGRESS=OFF `
-            -DBUILD_EXAMPLES=OFF `
-            -DBUILD_DOC=OFF
+            -DBUILD_SHARED_LIBS=OFF
           
           cmake --build . --config Release --parallel $env:NUMBER_OF_PROCESSORS
           cmake --install .
           
+          # Verify build
           if (!(Test-Path "${{ github.workspace }}\lib\windows\${{ matrix.architecture }}\lib\libzip.a")) {
             Write-Error "Failed to build libzip static library"
             exit 1
