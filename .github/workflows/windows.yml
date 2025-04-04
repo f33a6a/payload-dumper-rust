@@ -1,4 +1,4 @@
-name: Windows Builds (MinGW)
+name: Windows Builds
 
 on:
   workflow_dispatch:
@@ -7,27 +7,24 @@ jobs:
   build:
     strategy:
       matrix:
-        architecture: [x64, x86, arm64]
+        architecture: [x86_64, i686, arm64]
       fail-fast: false
 
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v3
 
-      - name: Install MinGW and dependencies
+      - name: Set up MinGW
+        uses: egor-tensin/setup-mingw@v2
+        with:
+          platform: ${{ matrix.architecture == 'i686' && 'x86' || matrix.architecture }}
+
+      - name: Install protoc
         run: |
-          choco install mingw --version=8.1.0
-          choco install msys2 --params "/InstallDir:C:\msys64 /NoUpdate /NoPath"
-          choco install protoc
-          
-          if ("${{ matrix.architecture }}" -eq "x64") {
-            C:\msys64\usr\bin\bash -lc "pacman -S --noconfirm mingw-w64-x86_64-toolchain mingw-w64-x86_64-cmake mingw-w64-x86_64-zlib mingw-w64-x86_64-libzip mingw-w64-x86_64-xz"
-          } elseif ("${{ matrix.architecture }}" -eq "x86") {
-            C:\msys64\usr\bin\bash -lc "pacman -S --noconfirm mingw-w64-i686-toolchain mingw-w64-i686-cmake mingw-w64-i686-zlib mingw-w64-i686-libzip mingw-w64-i686-xz"
-          } elseif ("${{ matrix.architecture }}" -eq "arm64") {
-            C:\msys64\usr\bin\bash -lc "pacman -S --noconfirm mingw-w64-clang-aarch64-toolchain mingw-w64-clang-aarch64-cmake mingw-w64-clang-aarch64-zlib mingw-w64-clang-aarch64-libzip mingw-w64-clang-aarch64-xz"
-          }
-        shell: pwsh
+          Invoke-WebRequest -Uri "https://github.com/protocolbuffers/protobuf/releases/download/v25.2/protoc-25.2-win64.zip" -OutFile "protoc.zip"
+          Expand-Archive -Path "protoc.zip" -DestinationPath "$env:GITHUB_WORKSPACE\protoc"
+          echo "$env:GITHUB_WORKSPACE\protoc\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          protoc --version
 
       - name: Set up Rust
         uses: actions-rs/toolchain@v1
@@ -39,27 +36,17 @@ jobs:
       - name: Set target
         id: set-target
         run: |
-          if ("${{ matrix.architecture }}" -eq "x64") {
-            echo "TARGET=x86_64-pc-windows-gnu" | Out-File -FilePath $env:GITHUB_ENV -Append
-            echo "MSYS_PATH=C:\msys64\mingw64\bin" | Out-File -FilePath $env:GITHUB_ENV -Append
-          } elseif ("${{ matrix.architecture }}" -eq "x86") {
-            echo "TARGET=i686-pc-windows-gnu" | Out-File -FilePath $env:GITHUB_ENV -Append
-            echo "MSYS_PATH=C:\msys64\mingw32\bin" | Out-File -FilePath $env:GITHUB_ENV -Append
-          } elseif ("${{ matrix.architecture }}" -eq "arm64") {
-            echo "TARGET=aarch64-pc-windows-gnu" | Out-File -FilePath $env:GITHUB_ENV -Append
-            echo "MSYS_PATH=C:\msys64\clang64\bin" | Out-File -FilePath $env:GITHUB_ENV -Append
+          if ("${{ matrix.architecture }}" -eq "x86_64") {
+            echo "TARGET=x86_64-pc-windows-gnu" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          } elseif ("${{ matrix.architecture }}" -eq "i686") {
+            echo "TARGET=i686-pc-windows-gnu" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          } else {
+            echo "TARGET=aarch64-pc-windows-gnu" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           }
-        shell: pwsh
-          
+
       - name: Add Rust target
         run: |
           rustup target add ${{ env.TARGET }}
-
-      - name: Update PATH
-        run: |
-          echo "${{ env.MSYS_PATH }}" | Out-File -FilePath $env:GITHUB_PATH -Append
-          echo "C:\msys64\usr\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
-        shell: pwsh
 
       - name: Create library directories
         run: |
@@ -71,212 +58,217 @@ jobs:
       - name: Download and extract zlib
         run: |
           cd ${{ github.workspace }}\build\zlib
-          curl -L https://zlib.net/zlib-1.3.1.tar.gz -o zlib.tar.gz
-          C:\msys64\usr\bin\bash -lc "cd ${{ github.workspace }}/build/zlib && tar -xzf zlib.tar.gz --strip-components=1"
-        shell: pwsh
+          Invoke-WebRequest -Uri "https://zlib.net/zlib-1.3.1.tar.gz" -OutFile "zlib.tar.gz"
+          tar -xzf zlib.tar.gz --strip-components=1
 
       - name: Build zlib
         run: |
           cd ${{ github.workspace }}\build\zlib
           
-          if ("${{ matrix.architecture }}" -eq "x64") {
-            $env:PATH = "${{ env.MSYS_PATH }};$env:PATH"
-            C:\msys64\usr\bin\bash -lc "cd ${{ github.workspace }}/build/zlib && CFLAGS='-static' ./configure --prefix=${{ github.workspace }}/lib/windows/x64 --static && make -j$(nproc) && make install"
-          } elseif ("${{ matrix.architecture }}" -eq "x86") {
-            $env:PATH = "${{ env.MSYS_PATH }};$env:PATH"
-            C:\msys64\usr\bin\bash -lc "cd ${{ github.workspace }}/build/zlib && CFLAGS='-static -m32' ./configure --prefix=${{ github.workspace }}/lib/windows/x86 --static && make -j$(nproc) && make install"
+          # Configure for MinGW cross-compilation
+          $env:BINARY_PATH = "${{ github.workspace }}\lib\windows\${{ matrix.architecture }}\bin"
+          $env:INCLUDE_PATH = "${{ github.workspace }}\lib\windows\${{ matrix.architecture }}\include"
+          $env:LIBRARY_PATH = "${{ github.workspace }}\lib\windows\${{ matrix.architecture }}\lib"
+          
+          # Make sure directories exist
+          mkdir -p $env:BINARY_PATH -Force
+          mkdir -p $env:INCLUDE_PATH -Force
+          mkdir -p $env:LIBRARY_PATH -Force
+          
+          # Set up compiler based on architecture
+          if ("${{ matrix.architecture }}" -eq "i686") {
+            $env:CC = "i686-w64-mingw32-gcc"
           } elseif ("${{ matrix.architecture }}" -eq "arm64") {
-            $env:PATH = "${{ env.MSYS_PATH }};$env:PATH"
-            C:\msys64\usr\bin\bash -lc "cd ${{ github.workspace }}/build/zlib && CC=clang CFLAGS='-static' ./configure --prefix=${{ github.workspace }}/lib/windows/arm64 --static && make -j$(nproc) && make install"
+            $env:CC = "aarch64-w64-mingw32-gcc"
+          } else {
+            $env:CC = "x86_64-w64-mingw32-gcc"
           }
-        shell: pwsh
+          
+          # Use mingw32-make if available, otherwise use standard make
+          $makeCommand = Get-Command mingw32-make -ErrorAction SilentlyContinue
+          if ($makeCommand) {
+            $make = "mingw32-make"
+          } else {
+            $make = "make"
+          }
+          
+          # Configure and build statically
+          $env:CFLAGS = "-static"
+          ./configure --prefix="${{ github.workspace }}\lib\windows\${{ matrix.architecture }}" --static
+          
+          & $make -j $env:NUMBER_OF_PROCESSORS
+          & $make install
+          
+          # Verify the built library file exists
+          if (Test-Path "${{ github.workspace }}\lib\windows\${{ matrix.architecture }}\lib\libz.a") {
+            echo "zlib static library successfully built"
+          } else {
+            echo "Failed to build zlib static library"
+            exit 1
+          }
 
       - name: Download and extract liblzma
         run: |
           cd ${{ github.workspace }}\build\liblzma
-          curl -L https://github.com/tukaani-project/xz/releases/download/v5.8.1/xz-5.8.1.tar.gz -o liblzma.tar.gz
-          C:\msys64\usr\bin\bash -lc "cd ${{ github.workspace }}/build/liblzma && tar -xzf liblzma.tar.gz --strip-components=1"
-        shell: pwsh
-          
+          Invoke-WebRequest -Uri "https://github.com/tukaani-project/xz/releases/download/v5.8.1/xz-5.8.1.tar.gz" -OutFile "liblzma.tar.gz"
+          tar -xzf liblzma.tar.gz --strip-components=1
+
       - name: Build liblzma
         run: |
           cd ${{ github.workspace }}\build\liblzma
           
-          if ("${{ matrix.architecture }}" -eq "x64") {
-            $env:PATH = "${{ env.MSYS_PATH }};$env:PATH"
-            C:\msys64\usr\bin\bash -lc "cd ${{ github.workspace }}/build/liblzma && CFLAGS='-static' ./configure --prefix=${{ github.workspace }}/lib/windows/x64 --disable-shared --enable-static && make -j$(nproc) && make install"
-          } elseif ("${{ matrix.architecture }}" -eq "x86") {
-            $env:PATH = "${{ env.MSYS_PATH }};$env:PATH"
-            C:\msys64\usr\bin\bash -lc "cd ${{ github.workspace }}/build/liblzma && CFLAGS='-static -m32' ./configure --prefix=${{ github.workspace }}/lib/windows/x86 --disable-shared --enable-static && make -j$(nproc) && make install"
+          # Set up compiler based on architecture
+          if ("${{ matrix.architecture }}" -eq "i686") {
+            $env:CC = "i686-w64-mingw32-gcc"
+            $hostOption = "--host=i686-w64-mingw32"
           } elseif ("${{ matrix.architecture }}" -eq "arm64") {
-            $env:PATH = "${{ env.MSYS_PATH }};$env:PATH"
-            C:\msys64\usr\bin\bash -lc "cd ${{ github.workspace }}/build/liblzma && CC=clang CFLAGS='-static' ./configure --prefix=${{ github.workspace }}/lib/windows/arm64 --disable-shared --enable-static && make -j$(nproc) && make install"
+            $env:CC = "aarch64-w64-mingw32-gcc"
+            $hostOption = "--host=aarch64-w64-mingw32"
+          } else {
+            $env:CC = "x86_64-w64-mingw32-gcc"
+            $hostOption = "--host=x86_64-w64-mingw32"
           }
-        shell: pwsh
+          
+          # Configure with static libraries only
+          $env:CFLAGS = "-static"
+          ./configure $hostOption --prefix="${{ github.workspace }}\lib\windows\${{ matrix.architecture }}" --disable-shared --enable-static
+          
+          # Use mingw32-make if available, otherwise use standard make
+          $makeCommand = Get-Command mingw32-make -ErrorAction SilentlyContinue
+          if ($makeCommand) {
+            $make = "mingw32-make"
+          } else {
+            $make = "make"
+          }
+          
+          & $make -j $env:NUMBER_OF_PROCESSORS
+          & $make install
+          
+          # Verify the built library file exists
+          if (Test-Path "${{ github.workspace }}\lib\windows\${{ matrix.architecture }}\lib\liblzma.a") {
+            echo "liblzma static library successfully built"
+          } else {
+            echo "Failed to build liblzma static library"
+            exit 1
+          }
 
       - name: Download and extract libzip
         run: |
           cd ${{ github.workspace }}\build\libzip
-          curl -L https://libzip.org/download/libzip-1.11.3.tar.xz -o libzip.tar.xz
-          C:\msys64\usr\bin\bash -lc "cd ${{ github.workspace }}/build/libzip && tar -xf libzip.tar.xz --strip-components=1"
-        shell: pwsh
+          Invoke-WebRequest -Uri "https://libzip.org/download/libzip-1.11.3.tar.xz" -OutFile "libzip.tar.xz"
+          tar -xf libzip.tar.xz --strip-components=1
+
+      - name: Install CMake
+        uses: lukka/get-cmake@latest
 
       - name: Build libzip
         run: |
           cd ${{ github.workspace }}\build\libzip
+          mkdir -p build
+          cd build
           
-          if ("${{ matrix.architecture }}" -eq "x64") {
-            $env:PATH = "${{ env.MSYS_PATH }};$env:PATH"
-            C:\msys64\usr\bin\bash -lc "cd ${{ github.workspace }}/build/libzip && mkdir -p build && cd build && \
-            cmake .. \
-              -G 'MSYS Makefiles' \
-              -DCMAKE_INSTALL_PREFIX=${{ github.workspace }}/lib/windows/x64 \
-              -DCMAKE_PREFIX_PATH=${{ github.workspace }}/lib/windows/x64 \
-              -DENABLE_LZMA=ON \
-              -DENABLE_BZIP2=OFF \
-              -DENABLE_ZSTD=OFF \
-              -DENABLE_OPENSSL=OFF \
-              -DENABLE_COMMONCRYPTO=OFF \
-              -DENABLE_GNUTLS=OFF \
-              -DENABLE_MBEDTLS=OFF \
-              -DBUILD_SHARED_LIBS=OFF \
-              -DBUILD_DOC=OFF \
-              -DBUILD_EXAMPLES=OFF \
-              -DBUILD_TOOLS=OFF \
-              -DBUILD_REGRESS=OFF \
-              -DBUILD_OSSFUZZ=OFF && \
-            make -j$(nproc) && \
-            make install"
-          } elseif ("${{ matrix.architecture }}" -eq "x86") {
-            $env:PATH = "${{ env.MSYS_PATH }};$env:PATH"
-            C:\msys64\usr\bin\bash -lc "cd ${{ github.workspace }}/build/libzip && mkdir -p build && cd build && \
-            CFLAGS='-m32' CXXFLAGS='-m32' LDFLAGS='-m32' \
-            cmake .. \
-              -G 'MSYS Makefiles' \
-              -DCMAKE_INSTALL_PREFIX=${{ github.workspace }}/lib/windows/x86 \
-              -DCMAKE_PREFIX_PATH=${{ github.workspace }}/lib/windows/x86 \
-              -DENABLE_LZMA=ON \
-              -DENABLE_BZIP2=OFF \
-              -DENABLE_ZSTD=OFF \
-              -DENABLE_OPENSSL=OFF \
-              -DENABLE_COMMONCRYPTO=OFF \
-              -DENABLE_GNUTLS=OFF \
-              -DENABLE_MBEDTLS=OFF \
-              -DBUILD_SHARED_LIBS=OFF \
-              -DBUILD_DOC=OFF \
-              -DBUILD_EXAMPLES=OFF \
-              -DBUILD_TOOLS=OFF \
-              -DBUILD_REGRESS=OFF \
-              -DBUILD_OSSFUZZ=OFF && \
-            make -j$(nproc) && \
-            make install"
+          # Set up compiler and flags based on architecture
+          if ("${{ matrix.architecture }}" -eq "i686") {
+            $env:TOOLCHAIN = "i686-w64-mingw32"
           } elseif ("${{ matrix.architecture }}" -eq "arm64") {
-            $env:PATH = "${{ env.MSYS_PATH }};$env:PATH"
-            C:\msys64\usr\bin\bash -lc "cd ${{ github.workspace }}/build/libzip && mkdir -p build && cd build && \
-            CC=clang CXX=clang++ \
-            cmake .. \
-              -G 'MSYS Makefiles' \
-              -DCMAKE_INSTALL_PREFIX=${{ github.workspace }}/lib/windows/arm64 \
-              -DCMAKE_PREFIX_PATH=${{ github.workspace }}/lib/windows/arm64 \
-              -DENABLE_LZMA=ON \
-              -DENABLE_BZIP2=OFF \
-              -DENABLE_ZSTD=OFF \
-              -DENABLE_OPENSSL=OFF \
-              -DENABLE_COMMONCRYPTO=OFF \
-              -DENABLE_GNUTLS=OFF \
-              -DENABLE_MBEDTLS=OFF \
-              -DBUILD_SHARED_LIBS=OFF \
-              -DBUILD_DOC=OFF \
-              -DBUILD_EXAMPLES=OFF \
-              -DBUILD_TOOLS=OFF \
-              -DBUILD_REGRESS=OFF \
-              -DBUILD_OSSFUZZ=OFF && \
-            make -j$(nproc) && \
-            make install"
+            $env:TOOLCHAIN = "aarch64-w64-mingw32"
+          } else {
+            $env:TOOLCHAIN = "x86_64-w64-mingw32"
           }
-        shell: pwsh
+          
+          # Configure libzip with CMake for MinGW cross-compilation
+          cmake .. `
+            -G "MinGW Makefiles" `
+            -DCMAKE_C_COMPILER="$env:TOOLCHAIN-gcc" `
+            -DCMAKE_CXX_COMPILER="$env:TOOLCHAIN-g++" `
+            -DCMAKE_SYSTEM_NAME="Windows" `
+            -DCMAKE_INSTALL_PREFIX="${{ github.workspace }}\lib\windows\${{ matrix.architecture }}" `
+            -DCMAKE_PREFIX_PATH="${{ github.workspace }}\lib\windows\${{ matrix.architecture }}" `
+            -DZLIB_INCLUDE_DIR="${{ github.workspace }}\lib\windows\${{ matrix.architecture }}\include" `
+            -DZLIB_LIBRARY="${{ github.workspace }}\lib\windows\${{ matrix.architecture }}\lib\libz.a" `
+            -DLIBLZMA_INCLUDE_DIR="${{ github.workspace }}\lib\windows\${{ matrix.architecture }}\include" `
+            -DLIBLZMA_LIBRARY="${{ github.workspace }}\lib\windows\${{ matrix.architecture }}\lib\liblzma.a" `
+            -DENABLE_BZIP2=OFF `
+            -DENABLE_ZSTD=OFF `
+            -DENABLE_OPENSSL=OFF `
+            -DENABLE_GNUTLS=OFF `
+            -DENABLE_MBEDTLS=OFF `
+            -DBUILD_SHARED_LIBS=OFF `
+            -DBUILD_DOC=OFF `
+            -DBUILD_EXAMPLES=OFF `
+            -DBUILD_TOOLS=OFF `
+            -DBUILD_REGRESS=OFF `
+            -DBUILD_OSSFUZZ=OFF
+          
+          # Use mingw32-make if available, otherwise use standard make
+          $makeCommand = Get-Command mingw32-make -ErrorAction SilentlyContinue
+          if ($makeCommand) {
+            $make = "mingw32-make"
+          } else {
+            $make = "make"
+          }
+          
+          & $make -j $env:NUMBER_OF_PROCESSORS
+          & $make install
+          
+          # Verify the built library file exists
+          if (Test-Path "${{ github.workspace }}\lib\windows\${{ matrix.architecture }}\lib\libzip.a") {
+            echo "libzip static library successfully built"
+          } else {
+            echo "Failed to build libzip static library"
+            exit 1
+          }
 
       - name: Set up environment
         run: |
-          echo "PKG_CONFIG_PATH=${{ github.workspace }}/lib/windows/${{ matrix.architecture }}/lib/pkgconfig" | Out-File -FilePath $env:GITHUB_ENV -Append
-          echo "LIBRARY_PATH=${{ github.workspace }}/lib/windows/${{ matrix.architecture }}/lib" | Out-File -FilePath $env:GITHUB_ENV -Append
-          echo "C_INCLUDE_PATH=${{ github.workspace }}/lib/windows/${{ matrix.architecture }}/include" | Out-File -FilePath $env:GITHUB_ENV -Append
-          echo "CPLUS_INCLUDE_PATH=${{ github.workspace }}/lib/windows/${{ matrix.architecture }}/include" | Out-File -FilePath $env:GITHUB_ENV -Append
-          echo "PKG_CONFIG_ALLOW_CROSS=1" | Out-File -FilePath $env:GITHUB_ENV -Append
-        shell: pwsh
+          echo "PKG_CONFIG_PATH=${{ github.workspace }}\lib\windows\${{ matrix.architecture }}\lib\pkgconfig" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          echo "LIBRARY_PATH=${{ github.workspace }}\lib\windows\${{ matrix.architecture }}\lib" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          echo "C_INCLUDE_PATH=${{ github.workspace }}\lib\windows\${{ matrix.architecture }}\include" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          echo "CPLUS_INCLUDE_PATH=${{ github.workspace }}\lib\windows\${{ matrix.architecture }}\include" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          echo "PKG_CONFIG_ALLOW_CROSS=1" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Create .cargo config
         run: |
           mkdir -p .cargo
           @"
-           [target.${{ env.TARGET }}]
-           rustflags = ["-L", "${{ github.workspace }}/lib/windows/${{ matrix.architecture }}/lib"]
-          "@ | Out-File -FilePath .cargo/config.toml -Encoding utf8
-          cat .cargo/config.toml
-        shell: pwsh
+          [target.${{ env.TARGET }}]
+          rustflags = ["-L", "${{ github.workspace }}\lib\windows\${{ matrix.architecture }}\lib"]
+          "@ | Out-File -FilePath .cargo\config.toml -Encoding utf8
+          Get-Content .cargo\config.toml
 
       - name: Build for ${{ matrix.architecture }}
         run: |
-          # Verify libraries exist
-          if (Test-Path "${{ github.workspace }}\lib\windows\${{ matrix.architecture }}\lib\libz.a") {
-            Write-Host "libz.a exists"
-          } else {
-            Write-Host "libz.a not found"
-            Get-ChildItem "${{ github.workspace }}\lib\windows\${{ matrix.architecture }}\lib\" -Recurse
-          }
+          # Verify libraries are built for the correct architecture
+          echo "Verifying libraries exist:"
+          Get-Item ${{ github.workspace }}\lib\windows\${{ matrix.architecture }}\lib\libz.a
+          Get-Item ${{ github.workspace }}\lib\windows\${{ matrix.architecture }}\lib\libzip.a
+          Get-Item ${{ github.workspace }}\lib\windows\${{ matrix.architecture }}\lib\liblzma.a
           
-          if (Test-Path "${{ github.workspace }}\lib\windows\${{ matrix.architecture }}\lib\libzip.a") {
-            Write-Host "libzip.a exists"
-          } else {
-            Write-Host "libzip.a not found"
-            Get-ChildItem "${{ github.workspace }}\lib\windows\${{ matrix.architecture }}\lib\" -Recurse
-          }
+          # Build with cross-compile target
+          $env:RUSTFLAGS = "-C target-feature=+crt-static"
           
-          if (Test-Path "${{ github.workspace }}\lib\windows\${{ matrix.architecture }}\lib\liblzma.a") {
-            Write-Host "liblzma.a exists"
-          } else {
-            Write-Host "liblzma.a not found"
-            Get-ChildItem "${{ github.workspace }}\lib\windows\${{ matrix.architecture }}\lib\" -Recurse
-          }
-          
-          # Set PATH to include MinGW
-          $env:PATH = "${{ env.MSYS_PATH }};$env:PATH"
-          
-          # Add rustflags
-          if ("${{ matrix.architecture }}" -eq "x64") {
-            $env:RUSTFLAGS = "-C target-feature=+crt-static"
-          } elseif ("${{ matrix.architecture }}" -eq "x86") {
-            $env:RUSTFLAGS = "-C target-feature=+crt-static"
-          } elseif ("${{ matrix.architecture }}" -eq "arm64") {
-            $env:RUSTFLAGS = "-C target-feature=+crt-static"
-          }
-          
-          Write-Host "Building for ${{ env.TARGET }} with flags: $env:RUSTFLAGS"
-          Write-Host "PKG_CONFIG_PATH=$env:PKG_CONFIG_PATH"
-          Write-Host "LIBRARY_PATH=$env:LIBRARY_PATH"
-          Write-Host "PATH=$env:PATH"
+          echo "Building for ${{ env.TARGET }} with RUSTFLAGS=$env:RUSTFLAGS"
+          echo "PKG_CONFIG_PATH=$env:PKG_CONFIG_PATH"
+          echo "LIBRARY_PATH=$env:LIBRARY_PATH"
           
           cargo build --release --target ${{ env.TARGET }}
-        shell: pwsh
 
       - name: Create artifacts directory
         run: mkdir -p artifacts
 
       - name: Copy binaries
         run: |
-          # Find and copy binary
-          $binaryPath = "target\${{ env.TARGET }}\release\payload_dumper.exe"
+          # Copy binary with appropriate extension
+          cp target/${{ env.TARGET }}/release/payload_dumper.exe ./artifacts/payload_dumper-${{ matrix.architecture }}.exe
           
-          Write-Host "Looking for binary in $binaryPath"
-          if (Test-Path $binaryPath) {
-            Copy-Item $binaryPath -Destination ".\artifacts\payload_dumper-${{ matrix.architecture }}.exe"
-            Write-Host "Binary copied to artifacts directory"
+          # Verify binary exists
+          if (Test-Path ./artifacts/payload_dumper-${{ matrix.architecture }}.exe) {
+            echo "Binary was built successfully:"
+            Get-Item ./artifacts/payload_dumper-${{ matrix.architecture }}.exe | Format-List
           } else {
-            Write-Host "Binary not found at expected location"
-            Get-ChildItem "target\${{ env.TARGET }}\release\" -ErrorAction SilentlyContinue | Format-Table
-            Get-ChildItem "target" -Recurse -Include "*.exe" -ErrorAction SilentlyContinue | Format-Table
+            echo "Failed to find binary"
+            Get-ChildItem -Recurse -Path target -Include *.exe | Where-Object { !$_.PSIsContainer }
           }
-        shell: pwsh
 
       - name: Upload Binaries
         uses: actions/upload-artifact@v4
