@@ -19,11 +19,10 @@ jobs:
         with:
           platform: ${{ matrix.architecture == 'i686' && 'x86' || matrix.architecture }}
 
-      - name: Install protoc
+      - name: Install protoc using Chocolatey
         run: |
-          Invoke-WebRequest -Uri "https://github.com/protocolbuffers/protobuf/releases/download/v25.2/protoc-25.2-win64.zip" -OutFile "protoc.zip"
-          Expand-Archive -Path "protoc.zip" -DestinationPath "$env:GITHUB_WORKSPACE\protoc"
-          echo "$env:GITHUB_WORKSPACE\protoc\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          choco install protoc -y
+          refreshenv
           protoc --version
 
       - name: Set up Rust
@@ -226,15 +225,40 @@ jobs:
           echo "C_INCLUDE_PATH=${{ github.workspace }}\lib\windows\${{ matrix.architecture }}\include" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           echo "CPLUS_INCLUDE_PATH=${{ github.workspace }}\lib\windows\${{ matrix.architecture }}\include" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           echo "PKG_CONFIG_ALLOW_CROSS=1" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          
+          # Handle the PATH refresh explicitly since 'refreshenv' is not available in workflows
+          $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
 
       - name: Create .cargo config
         run: |
           mkdir -p .cargo
           @"
-          [target.${{ env.TARGET }}]
-          rustflags = ["-L", "${{ github.workspace }}\lib\windows\${{ matrix.architecture }}\lib"]
-          "@ | Out-File -FilePath .cargo\config.toml -Encoding utf8
+            [target.${{ env.TARGET }}]
+            rustflags = ["-L", "${{ github.workspace }}\lib\windows\${{ matrix.architecture }}\lib"]
+            "@ | Out-File -FilePath .cargo\config.toml -Encoding utf8
           Get-Content .cargo\config.toml
+
+      - name: Handle pthread library issue
+        run: |
+          # Check for specific library paths that might cause issues
+          $mingwLib = ""
+          
+          if ("${{ matrix.architecture }}" -eq "i686") {
+            $mingwLib = "C:\ProgramData\chocolatey\lib\mingw\tools\install\mingw32\i686-w64-mingw32\lib"
+          } elseif ("${{ matrix.architecture }}" -eq "arm64") {
+            $mingwLib = "C:\ProgramData\chocolatey\lib\mingw\tools\install\mingw32\aarch64-w64-mingw32\lib"
+          } else {
+            $mingwLib = "C:\ProgramData\chocolatey\lib\mingw\tools\install\mingw64\x86_64-w64-mingw32\lib"
+          }
+          
+          # Check if problematic library exists before attempting to remove it
+          $libpthreadPath = Join-Path $mingwLib 'libpthread.dll.a'
+          if (Test-Path $libpthreadPath) {
+            Remove-Item $libpthreadPath -Force
+            echo "Removed problematic libpthread.dll.a"
+          } else {
+            echo "libpthread.dll.a not found, skipping removal"
+          }
 
       - name: Build for ${{ matrix.architecture }}
         run: |
