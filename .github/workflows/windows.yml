@@ -92,8 +92,11 @@ jobs:
             $env:CC = "clang"
           }
           
+          # Convert path to Unix format for bash
+          $prefixPath = "${{ github.workspace }}".Replace('\', '/')
+          
           # Configure and build
-          bash -c "./configure --prefix=$(${{ github.workspace }}.Replace('\','/') + '/lib/windows/${{ matrix.architecture }}') --static"
+          bash -c "./configure --prefix=$prefixPath/lib/windows/${{ matrix.architecture }} --static"
           make -j $env:NUMBER_OF_PROCESSORS
           make install
           
@@ -123,8 +126,11 @@ jobs:
             $hostOption = "aarch64-w64-mingw32"
           }
           
+          # Convert path to Unix format for bash
+          $prefixPath = "${{ github.workspace }}".Replace('\', '/')
+          
           # Configure and build
-          bash -c "./configure --host=$hostOption --prefix=$(${{ github.workspace }}.Replace('\','/') + '/lib/windows/${{ matrix.architecture }}') --disable-shared --enable-static"
+          bash -c "./configure --host=$hostOption --prefix=$prefixPath/lib/windows/${{ matrix.architecture }} --disable-shared --enable-static"
           make -j $env:NUMBER_OF_PROCESSORS
           make install
           
@@ -155,7 +161,14 @@ jobs:
             $toolchain = "aarch64-w64-mingw32"
           }
           
-          # Disable building tools to avoid linker issues
+          # Check if zlib exists at the expected location
+          if (!(Test-Path "${{ github.workspace }}\lib\windows\${{ matrix.architecture }}\lib\libz.a")) {
+            Write-Error "zlib library not found at expected location"
+            Get-ChildItem -Path "${{ github.workspace }}\lib\windows\${{ matrix.architecture }}\lib" -Force
+            exit 1
+          }
+          
+          # Disable all optional components
           cmake .. `
             -G "MinGW Makefiles" `
             -DCMAKE_C_COMPILER="$toolchain-gcc" `
@@ -170,10 +183,15 @@ jobs:
             -DBUILD_TOOLS=OFF `
             -DBUILD_REGRESS=OFF `
             -DBUILD_EXAMPLES=OFF `
-            -DBUILD_DOC=OFF
+            -DBUILD_DOC=OFF `
+            -DENABLE_COMMONCRYPTO=OFF `
+            -DENABLE_GNUTLS=OFF `
+            -DENABLE_MBEDTLS=OFF `
+            -DENABLE_OPENSSL=OFF `
+            -DENABLE_WINDOWS_CRYPTO=OFF `
+            -DLIBZIP_DO_INSTALL=ON
           
-          cmake --build . --config Release --parallel $env:NUMBER_OF_PROCESSORS
-          cmake --install .
+          cmake --build . --config Release --target install --parallel $env:NUMBER_OF_PROCESSORS
           
           # Verify build
           if (!(Test-Path "${{ github.workspace }}\lib\windows\${{ matrix.architecture }}\lib\libzip.a")) {
