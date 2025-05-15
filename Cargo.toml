@@ -30,6 +30,9 @@ serde_json = "*"
 url = "*"
 lazy_static = "*"
 
+reqwest-hickory-resolver = { version = "*", optional = true }
+once_cell = { version = "*", optional = true }
+
 [build-dependencies]
 prost-build = "*"
 cc = "*"
