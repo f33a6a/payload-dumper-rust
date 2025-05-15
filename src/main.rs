@@ -25,6 +25,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use url;
 use lazy_static::lazy_static;
+use once_cell::sync::Lazy;
+
+#[cfg(feature = "hickory-dns")]
+use reqwest_hickory_resolver::HickoryResolver;
+
+#[cfg(feature = "hickory-dns")]
+static GLOBAL_RESOLVER: Lazy<Arc<HickoryResolver>> = 
+    Lazy::new(|| Arc::new(HickoryResolver::default()));
 
 lazy_static! {
     static ref HTTP_CLIENT: Client = {
@@ -38,12 +46,17 @@ lazy_static! {
         headers.insert(header::CONNECTION, header::HeaderValue::from_static("keep-alive"));
         headers.insert(header::CACHE_CONTROL, header::HeaderValue::from_static("no-transform"));
         
-        Client::builder()
+        let client_builder = Client::builder()
             .timeout(Duration::from_secs(600))
             .tcp_keepalive(Some(Duration::from_secs(30)))
             .pool_max_idle_per_host(10)
             .default_headers(headers)
-            .redirect(reqwest::redirect::Policy::limited(10))
+            .redirect(reqwest::redirect::Policy::limited(10));
+            
+        #[cfg(feature = "hickory-dns")]
+        let client_builder = client_builder.dns_resolver(GLOBAL_RESOLVER.clone());
+        
+        client_builder
             .build()
             .unwrap_or_else(|_| Client::new())
     };
