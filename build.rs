@@ -29,3 +29,13 @@ fn find_libzip(use_static: bool) {
         .probe("libzip")
         .expect("Failed to find libzip via pkg-config");
 }
+
+fn main() {
+    println!("cargo:rerun-if-changed=build.rs");
+
+    
+    let use_static = std::env::var("CARGO_FEATURE_STATIC").is_ok()
+        || std::env::var("LIBZIP_STATIC").is_ok();
+
+    find_libzip(use_static);
+}
