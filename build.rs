@@ -5,8 +5,10 @@ fn find_libzip(use_static: bool) {
     if use_static {
         config.r#static(true);
         println!("cargo:rustc-link-lib=static=zip");
+        println!("cargo:rustc-link-lib=static=z");
     } else {
         println!("cargo:rustc-link-lib=zip");
+        println!("cargo:rustc-link-lib=z");
     }
 
     config
@@ -21,8 +23,10 @@ fn find_libzip(use_static: bool) {
     if use_static {
         config.statik(true);
         println!("cargo:rustc-link-lib=static=zip");
+        println!("cargo:rustc-link-lib=static=z");
     } else {
         println!("cargo:rustc-link-lib=zip");
+        println!("cargo:rustc-link-lib=z");
     }
 
     config
@@ -33,7 +37,6 @@ fn find_libzip(use_static: bool) {
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
 
-    
     let use_static = std::env::var("CARGO_FEATURE_STATIC").is_ok()
         || std::env::var("LIBZIP_STATIC").is_ok();
 
