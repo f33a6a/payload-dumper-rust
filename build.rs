@@ -1,5 +1,5 @@
 #[cfg(windows)]
-fn find_libzip(use_static: bool) {
+fn link(use_static: bool) {
     let mut config = vcpkg::Config::new();
 
     if use_static {
@@ -17,7 +17,7 @@ fn find_libzip(use_static: bool) {
 }
 
 #[cfg(not(windows))]
-fn find_libzip(use_static: bool) {
+fn link(use_static: bool) {
     let mut config = pkg_config::Config::new();
 
     if use_static {
@@ -40,5 +40,5 @@ fn main() {
     let use_static = std::env::var("CARGO_FEATURE_STATIC").is_ok()
         || std::env::var("LIBZIP_STATIC").is_ok();
 
-    find_libzip(use_static);
+    link(use_static);
 }
