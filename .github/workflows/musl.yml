@@ -268,6 +268,7 @@ jobs:
           fi
           cargo build --release --target ${{ env.TARGET }} --features hickory-dns
         env:
+          STATIC_LIBS: 1
           PKG_CONFIG_ALLOW_CROSS: 1
           PKG_CONFIG_PATH: ${{ env.PKG_CONFIG_PATH }}
           RUSTFLAGS: '-C target-feature=+crt-static'
