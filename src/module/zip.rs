@@ -19,6 +19,7 @@ pub struct zip_stat_t {
     size: u64,
 }
 
+#[cfg(target_os = "windows")]
 #[repr(C)]
 pub struct zip_error_t {
     zip_err: c_int,
