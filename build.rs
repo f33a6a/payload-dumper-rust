@@ -109,11 +109,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     
-    // Link libraries - static or dynamic based on environment variable
     if use_static_libs {
+        println!("cargo:rustc-link-lib=static=lzma");
         println!("cargo:rustc-link-lib=static=zip");
         println!("cargo:rustc-link-lib=static=z");
     } else {
+        println!("cargo:rustc-link-lib=lzma");
         println!("cargo:rustc-link-lib=zip");
         println!("cargo:rustc-link-lib=z");
     }
