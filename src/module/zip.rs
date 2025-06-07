@@ -19,7 +19,6 @@ pub struct zip_stat_t {
     size: u64,
 }
 
-#[cfg(target_os = "windows")]
 #[repr(C)]
 pub struct zip_error_t {
     zip_err: c_int,
@@ -65,6 +64,21 @@ unsafe extern "C" {
     pub fn zip_fseek(file: *mut c_void, offset: i64, whence: c_int) -> i8;
     pub fn zip_file_is_seekable(file: *mut c_void) -> c_int;
     
+    // Cross-platform source-based functions
+    pub fn zip_open_from_source(
+        source: *mut c_void, // zip_source_t*
+        flags: c_int,
+        error: *mut zip_error_t,
+    ) -> *mut c_void; // zip_t*
+    
+    pub fn zip_source_free(source: *mut c_void); // zip_source_t*
+    
+    pub fn zip_error_init(error: *mut zip_error_t);
+    
+    pub fn zip_error_fini(error: *mut zip_error_t);
+    
+    pub fn zip_error_code_zip(error: *const zip_error_t) -> c_int;
+    
     // Windows-specific functions
     #[cfg(target_os = "windows")]
     pub fn zip_source_win32w_create(
@@ -74,24 +88,14 @@ unsafe extern "C" {
         error: *mut zip_error_t,
     ) -> *mut c_void; // zip_source_t*
     
-    #[cfg(target_os = "windows")]
-    pub fn zip_open_from_source(
-        source: *mut c_void, // zip_source_t*
-        flags: c_int,
+    // Unix/Linux file source functions
+    #[cfg(not(target_os = "windows"))]
+    pub fn zip_source_file_create(
+        fname: *const c_char,
+        start: u64,
+        len: i64,
         error: *mut zip_error_t,
-    ) -> *mut c_void; // zip_t*
-    
-    #[cfg(target_os = "windows")]
-    pub fn zip_source_free(source: *mut c_void); // zip_source_t*
-    
-    #[cfg(target_os = "windows")]
-    pub fn zip_error_init(error: *mut zip_error_t);
-    
-    #[cfg(target_os = "windows")]
-    pub fn zip_error_fini(error: *mut zip_error_t);
-    
-    #[cfg(target_os = "windows")]
-    pub fn zip_error_code_zip(error: *const zip_error_t) -> c_int;
+    ) -> *mut c_void; // zip_source_t*
 }
 
 impl Default for zip_stat_t {
@@ -105,7 +109,6 @@ impl Default for zip_stat_t {
     }
 }
 
-#[cfg(target_os = "windows")]
 impl Default for zip_error_t {
     fn default() -> Self {
         zip_error_t {
@@ -266,7 +269,7 @@ impl LibZipReader {
     #[cfg(not(target_os = "windows"))]
     pub fn new_for_parallel(path: String) -> Result<Self> {
         unsafe {
-            let mut error = 0;
+            // Create a file source for Unix-like systems
             let c_path = match std::ffi::CString::new(path.clone()) {
                 Ok(p) => p,
                 Err(e) => {
@@ -274,16 +277,51 @@ impl LibZipReader {
                 }
             };
 
-            let archive = zip_open(c_path.as_ptr(), 0, &mut error);
-            if archive.is_null() {
-                let error_msg = get_zip_error_message(error);
+            let mut error = zip_error_t::default();
+            zip_error_init(&mut error);
+
+            // Create a file source using Unix file API
+            let source = zip_source_file_create(
+                c_path.as_ptr(),
+                0,  // start offset
+                -1, // read entire file
+                &mut error,
+            );
+
+            if source.is_null() {
+                zip_error_fini(&mut error);
+                let error_code = zip_error_code_zip(&error);
+                let error_msg = get_zip_error_message(error_code);
                 return Err(anyhow!(
-                    "Failed to open ZIP file: {} ({})",
+                    "Failed to create file source for ZIP file: {} ({})",
                     error_msg,
-                    error
+                    error_code
                 ));
             }
 
+            // Open ZIP archive from the file source
+            let mut open_error = zip_error_t::default();
+            zip_error_init(&mut open_error);
+            
+            let archive = zip_open_from_source(source, 0, &mut open_error);
+            
+            if archive.is_null() {
+                let error_code = zip_error_code_zip(&open_error);
+                let error_msg = get_zip_error_message(error_code);
+                zip_source_free(source);
+                zip_error_fini(&mut error);
+                zip_error_fini(&mut open_error);
+                return Err(anyhow!(
+                    "Failed to open ZIP file from file source: {} ({})",
+                    error_msg,
+                    error_code
+                ));
+            }
+
+            zip_error_fini(&mut error);
+            zip_error_fini(&mut open_error);
+
+            // The source is now owned by the archive, don't free it manually
             match Self::new(archive, path) {
                 Ok(reader) => Ok(reader),
                 Err(e) => {
