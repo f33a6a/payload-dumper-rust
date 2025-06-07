@@ -197,6 +197,7 @@ jobs:
           echo "Building for $TARGET with flags: $RUSTFLAGS"
           echo "PKG_CONFIG_PATH=$PKG_CONFIG_PATH"
           echo "LIBRARY_PATH=$LIBRARY_PATH"
+          export STATIC_LIBS=1
           echo "PKG_CONFIG_ALLOW_CROSS=$PKG_CONFIG_ALLOW_CROSS"
           
           cargo build --release --target $TARGET
