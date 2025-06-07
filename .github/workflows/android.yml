@@ -237,7 +237,7 @@ jobs:
           export PKG_CONFIG_PATH="${{ github.workspace }}/lib/android/${{ matrix.lib_dir }}/pkgconfig"
           export PKG_CONFIG_ALLOW_CROSS=1
           export CFLAGS_${{ matrix.arch }}_linux_android="-O3 -target ${{ matrix.target }}21"
-          
+          export STATIC_LIBS=1
           if [ "${{ matrix.arch }}" = "x86" ]; then
             export CFLAGS_i686_linux_android="-O3 -target i686-linux-android21"
           fi
