@@ -24,6 +24,7 @@ pub struct LibZipReader {
     buffer_size: usize,
     cached_filename: Option<std::ffi::CString>,
     file_index: i64,
+    is_seekable: Option<bool>, // Cache seekability check
 }
 
 #[link(name = "zip")]
@@ -48,6 +49,9 @@ unsafe extern "C" {
         st: *mut zip_stat_t,
     ) -> c_int;
     pub fn zip_fopen(archive: *mut c_void, name: *const c_char, flags: c_int) -> *mut c_void;
+    // New functions for seeking
+    pub fn zip_fseek(file: *mut c_void, offset: i64, whence: c_int) -> i8;
+    pub fn zip_file_is_seekable(file: *mut c_void) -> c_int;
 }
 
 impl Default for zip_stat_t {
@@ -140,9 +144,11 @@ impl LibZipReader {
                 buffer_size,
                 cached_filename,
                 file_index,
+                is_seekable: None, // Will be checked on first seek
             })
         }
     }
+
     pub fn new_for_parallel(path: String) -> Result<Self> {
         unsafe {
             let mut error = 0;
@@ -175,6 +181,197 @@ impl LibZipReader {
             }
         }
     }
+
+    // Check if the file is seekable (uncompressed) and cache the result
+    fn check_seekable(&mut self) -> io::Result<bool> {
+        if let Some(seekable) = self.is_seekable {
+            return Ok(seekable);
+        }
+
+        unsafe {
+            if self.file.is_null() {
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    "File handle is null",
+                ));
+            }
+
+            let result = zip_file_is_seekable(self.file);
+            match result {
+                1 => {
+                    self.is_seekable = Some(true);
+                    Ok(true)
+                }
+                0 => {
+                    self.is_seekable = Some(false);
+                    Ok(false)
+                }
+                -1 => Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    "Invalid argument when checking seekability",
+                )),
+                _ => Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    "Unexpected return value from zip_file_is_seekable",
+                )),
+            }
+        }
+    }
+
+    // Fast seek using zip_fseek for uncompressed files
+    fn fast_seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
+        let new_pos = match pos {
+            SeekFrom::Start(offset) => offset,
+            SeekFrom::Current(offset) => {
+                if offset >= 0 {
+                    self.current_position.saturating_add(offset as u64)
+                } else {
+                    self.current_position.saturating_sub(offset.abs() as u64)
+                }
+            }
+            SeekFrom::End(offset) => {
+                if offset >= 0 {
+                    self.file_size.saturating_add(offset as u64)
+                } else {
+                    self.file_size.saturating_sub(offset.abs() as u64)
+                }
+            }
+        };
+
+        if new_pos > self.file_size {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Attempted to seek past end of file",
+            ));
+        }
+
+        // Convert SeekFrom to libzip whence constants
+        let (offset, whence) = match pos {
+            SeekFrom::Start(offset) => (offset as i64, 0), // SEEK_SET
+            SeekFrom::Current(offset) => (offset, 1), // SEEK_CUR
+            SeekFrom::End(offset) => (offset, 2), // SEEK_END
+        };
+
+        unsafe {
+            if self.file.is_null() {
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    "File handle is null",
+                ));
+            }
+
+            let result = zip_fseek(self.file, offset, whence);
+            if result != 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    "zip_fseek failed",
+                ));
+            }
+
+            self.current_position = new_pos;
+            Ok(self.current_position)
+        }
+    }
+
+    // Slow seek for compressed files (current implementation)
+    fn slow_seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
+        let new_pos = match pos {
+            SeekFrom::Start(offset) => offset,
+            SeekFrom::Current(offset) => {
+                if offset >= 0 {
+                    self.current_position.saturating_add(offset as u64)
+                } else {
+                    self.current_position.saturating_sub(offset.abs() as u64)
+                }
+            }
+            SeekFrom::End(offset) => {
+                if offset >= 0 {
+                    self.file_size.saturating_add(offset as u64)
+                } else {
+                    self.file_size.saturating_sub(offset.abs() as u64)
+                }
+            }
+        };
+
+        if new_pos > self.file_size {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Attempted to seek past end of file",
+            ));
+        }
+
+        if new_pos == self.current_position {
+            return Ok(new_pos);
+        }
+
+        // Small forward seeks can be done by reading and discarding
+        if new_pos > self.current_position && new_pos - self.current_position <= 8 * 1024 {
+            let mut skip_buf = vec![0u8; (new_pos - self.current_position) as usize];
+            self.read_exact(&mut skip_buf)?;
+            return Ok(self.current_position);
+        }
+
+        // For larger seeks, reopen the file and read to the position
+        unsafe {
+            if !self.file.is_null() {
+                zip_fclose(self.file);
+                self.file = std::ptr::null_mut();
+            }
+
+            if self.file_index >= 0 {
+                self.file = zip_fopen_index(self.archive, self.file_index as u64, 0);
+            } else if let Some(ref filename) = self.cached_filename {
+                self.file = zip_fopen(self.archive, filename.as_ptr(), 0);
+            } else {
+                // useless fallback
+                let payload_name = match CStr::from_bytes_with_nul(b"payload.bin\0") {
+                    Ok(name) => name,
+                    Err(_) => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::Other,
+                            "Failed to create CStr for payload.bin",
+                        ));
+                    }
+                };
+                self.file = zip_fopen(self.archive, payload_name.as_ptr(), 0);
+            }
+
+            if self.file.is_null() {
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    "Failed to reopen file for seeking",
+                ));
+            }
+
+            // Reset seekability cache since we reopened the file
+            self.is_seekable = None;
+            self.current_position = 0;
+
+            if new_pos > 0 {
+                if self.buffer.len() < self.buffer_size {
+                    self.buffer.resize(self.buffer_size, 0);
+                }
+
+                let mut remaining = new_pos;
+                while remaining > 0 {
+                    let to_read = remaining.min(self.buffer.len() as u64) as usize;
+                    let read_bytes =
+                        zip_fread(self.file, self.buffer.as_mut_ptr() as *mut c_void, to_read);
+                    if read_bytes <= 0 {
+                        return Err(io::Error::new(io::ErrorKind::Other, "Failed to seek"));
+                    }
+                    self.current_position += read_bytes as u64;
+                    remaining -= read_bytes as u64;
+
+                    if read_bytes < to_read as isize {
+                        break;
+                    }
+                }
+            }
+
+            Ok(self.current_position)
+        }
+    }
 }
 
 impl Drop for LibZipReader {
@@ -193,6 +390,7 @@ impl Drop for LibZipReader {
         }
     }
 }
+
 impl Read for LibZipReader {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         if buf.is_empty() {
@@ -256,101 +454,49 @@ impl Read for LibZipReader {
         }
     }
 }
+
 impl Seek for LibZipReader {
     fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
-        let new_pos = match pos {
-            SeekFrom::Start(offset) => offset,
-            SeekFrom::Current(offset) => {
-                if offset >= 0 {
-                    self.current_position.saturating_add(offset as u64)
-                } else {
-                    self.current_position.saturating_sub(offset.abs() as u64)
-                }
-            }
-            SeekFrom::End(offset) => {
-                if offset >= 0 {
-                    self.file_size.saturating_add(offset as u64)
-                } else {
-                    self.file_size.saturating_sub(offset.abs() as u64)
-                }
-            }
-        };
-        if new_pos > self.file_size {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "Attempted to seek past end of file",
-            ));
-        }
+        // Handle memory-mapped files first
         if self.mmap.is_some() {
+            let new_pos = match pos {
+                SeekFrom::Start(offset) => offset,
+                SeekFrom::Current(offset) => {
+                    if offset >= 0 {
+                        self.current_position.saturating_add(offset as u64)
+                    } else {
+                        self.current_position.saturating_sub(offset.abs() as u64)
+                    }
+                }
+                SeekFrom::End(offset) => {
+                    if offset >= 0 {
+                        self.file_size.saturating_add(offset as u64)
+                    } else {
+                        self.file_size.saturating_sub(offset.abs() as u64)
+                    }
+                }
+            };
+            
+            if new_pos > self.file_size {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "Attempted to seek past end of file",
+                ));
+            }
+            
             self.current_position = new_pos;
             return Ok(self.current_position);
         }
-        if new_pos == self.current_position {
-            return Ok(new_pos);
-        }
 
-        if new_pos > self.current_position && new_pos - self.current_position <= 8 * 1024 {
-            let mut skip_buf = vec![0u8; (new_pos - self.current_position) as usize];
-            self.read_exact(&mut skip_buf)?;
-            return Ok(self.current_position);
-        }
-
-        unsafe {
-            if !self.file.is_null() {
-                zip_fclose(self.file);
-                self.file = std::ptr::null_mut();
+        // Check if file is seekable (uncompressed) and use appropriate method
+        match self.check_seekable() {
+            Ok(true) => self.fast_seek(pos),
+            Ok(false) => self.slow_seek(pos),
+            Err(e) => {
+                // If we can't determine seekability, fall back to slow seek
+                eprintln!("Warning: Could not determine file seekability, using slow seek: {}", e);
+                self.slow_seek(pos)
             }
-
-            if self.file_index >= 0 {
-                self.file = zip_fopen_index(self.archive, self.file_index as u64, 0);
-            } else if let Some(ref filename) = self.cached_filename {
-                self.file = zip_fopen(self.archive, filename.as_ptr(), 0);
-            } else {
-                // useless fallback
-                let payload_name = match CStr::from_bytes_with_nul(b"payload.bin\0") {
-                    Ok(name) => name,
-                    Err(_) => {
-                        return Err(io::Error::new(
-                            io::ErrorKind::Other,
-                            "Failed to create CStr for payload.bin",
-                        ));
-                    }
-                };
-                self.file = zip_fopen(self.archive, payload_name.as_ptr(), 0);
-            }
-
-            if self.file.is_null() {
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    "Failed to reopen file for seeking",
-                ));
-            }
-
-            self.current_position = 0;
-
-            if new_pos > 0 {
-                if self.buffer.len() < self.buffer_size {
-                    self.buffer.resize(self.buffer_size, 0);
-                }
-
-                let mut remaining = new_pos;
-                while remaining > 0 {
-                    let to_read = remaining.min(self.buffer.len() as u64) as usize;
-                    let read_bytes =
-                        zip_fread(self.file, self.buffer.as_mut_ptr() as *mut c_void, to_read);
-                    if read_bytes <= 0 {
-                        return Err(io::Error::new(io::ErrorKind::Other, "Failed to seek"));
-                    }
-                    self.current_position += read_bytes as u64;
-                    remaining -= read_bytes as u64;
-
-                    if read_bytes < to_read as isize {
-                        break;
-                    }
-                }
-            }
-
-            Ok(self.current_position)
         }
     }
 }
